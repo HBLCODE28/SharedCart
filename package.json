@@ -1,0 +1,16 @@
+{
+  "name": "sharedcart-qa",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "qa:smoke": "node ./node_modules/@playwright/test/cli.js test --grep @smoke",
+    "qa:e2e": "node ./node_modules/@playwright/test/cli.js test --grep @e2e",
+    "qa:security": "node ./node_modules/@playwright/test/cli.js test --grep @security",
+    "qa:full": "node ./node_modules/@playwright/test/cli.js test",
+    "qa:report": "node ./node_modules/@playwright/test/cli.js show-report"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.57.0"
+  }
+}
