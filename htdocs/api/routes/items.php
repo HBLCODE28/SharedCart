@@ -58,6 +58,7 @@ function purgeExpiredCompletedItems(PDO $dbh, int $groupId): int {
           WHERE group_id = :g
             AND deleted_at IS NULL
             AND is_staple = 1
+            AND is_not_needed = 0
             AND is_completed = 1
             AND completed_at IS NOT NULL
             AND completed_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ' . (int)COMPLETED_ITEM_RETENTION_HOURS . ' HOUR)'
@@ -70,6 +71,7 @@ function purgeExpiredCompletedItems(PDO $dbh, int $groupId): int {
           WHERE group_id = :g
             AND deleted_at IS NULL
             AND is_staple = 0
+            AND is_not_needed = 0
             AND is_completed = 1
             AND completed_at IS NOT NULL
             AND completed_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ' . (int)COMPLETED_ITEM_RETENTION_HOURS . ' HOUR)'
@@ -82,7 +84,7 @@ function purgeExpiredCompletedItems(PDO $dbh, int $groupId): int {
 
 function fetchItemContext(PDO $dbh, int $itemId): ?array {
     $stmt = $dbh->prepare(
-        'SELECT i.id, i.group_id, i.created_by, i.name, i.image_path, i.is_staple, i.quantity AS base_quantity, i.is_completed,
+        'SELECT i.id, i.group_id, i.created_by, i.name, i.image_path, i.is_staple, i.is_not_needed, i.quantity AS base_quantity, i.is_completed,
                 g.name AS group_name,
                 u.username AS creator_name
            FROM grocery_items i
@@ -206,6 +208,7 @@ function getItemTotals(PDO $dbh, int $itemId, int $uid): ?array {
     $item['base_quantity'] = (int)$item['base_quantity'];
     $item['image_path'] = (string)($item['image_path'] ?? '');
     $item['is_staple'] = (bool)($item['is_staple'] ?? false);
+    $item['is_not_needed'] = (bool)($item['is_not_needed'] ?? false);
     $item['total_extra'] = $summary['total_extra'];
     $item['my_contribution_qty'] = $summary['my_contribution'];
     $item['quantity'] = $item['base_quantity'] + $summary['total_extra'];
@@ -223,7 +226,7 @@ function getItemTotals(PDO $dbh, int $itemId, int $uid): ?array {
 
 function fetchItemsFallback(PDO $dbh, int $groupId, int $uid): array {
     $stmt = $dbh->prepare(
-        'SELECT i.id, i.name, i.image_path, i.is_staple, i.quantity AS base_quantity,
+        'SELECT i.id, i.name, i.image_path, i.is_staple, i.is_not_needed, i.quantity AS base_quantity,
                 i.quantity AS quantity,
                 i.is_completed,
                 i.created_at, i.completed_at,
@@ -370,6 +373,31 @@ if ('contribution' === $sub && null !== $id && ('POST' === $method || 'DELETE' =
     ]);
 }
 
+// PATCH /api/items/{id}/list-status
+// Shared group state: keep items in either the shopping or not-needed list.
+if ('list-status' === $sub && null !== $id && 'PATCH' === $method) {
+    $body = json_decode(file_get_contents('php://input'), true);
+    if (!is_array($body) || !array_key_exists('is_not_needed', $body)
+        || !in_array($body['is_not_needed'], [true, false, 0, 1], true)) {
+        jsonError('Invalid list status', 400);
+    }
+    $isNotNeeded = (int)(bool)$body['is_not_needed'];
+    $item = fetchItemContext($dbh, $id);
+    if (!$item) jsonError('Item not found', 404);
+    if (!isMember($dbh, (int)$item['group_id'], $uid)) jsonError('Forbidden', 403);
+
+    // Reset any completed mark when changing lists, avoiding accidental
+    // deletion by the 24-hour completion cleanup.
+    $stmt = $dbh->prepare(
+        'UPDATE grocery_items
+            SET is_not_needed = :status,
+                is_completed = 0, completed_by = NULL, completed_at = NULL
+          WHERE id = :id AND deleted_at IS NULL'
+    );
+    $stmt->execute([':status' => $isNotNeeded, ':id' => $id]);
+    jsonOut(['message' => 'List status updated', 'is_not_needed' => (bool)$isNotNeeded]);
+}
+
 // PATCH /api/items/{id}/complete
 // PATCH /api/items/{id}/uncomplete
 if ('uncomplete' === $sub && null !== $id && 'PATCH' === $method) {
@@ -396,6 +424,7 @@ if ('complete' === $sub && null !== $id && 'PATCH' === $method) {
     if (!$item) jsonError('Item not found', 404);
     if (!isMember($dbh, (int)$item['group_id'], $uid)) jsonError('Forbidden', 403);
     if ((int)$item['is_completed'] === 1) jsonError('Already completed');
+    if ((int)$item['is_not_needed'] === 1) jsonError('Item is not on the shopping list', 400);
 
     $dbh->beginTransaction();
 
@@ -507,7 +536,7 @@ if ('GET' === $method && null === $id && '' === $sub) {
 
     try {
         $stmt = $dbh->prepare(
-            'SELECT i.id, i.name, i.image_path, i.is_staple, i.quantity AS base_quantity,
+            'SELECT i.id, i.name, i.image_path, i.is_staple, i.is_not_needed, i.quantity AS base_quantity,
                     i.quantity + COALESCE(extra.total_extra, 0) AS quantity,
                     i.is_completed,
                     i.created_at, i.completed_at,
@@ -588,6 +617,7 @@ if ('POST' === $method && null === $id && '' === $sub) {
     $groupId = (int)($body['group_id'] ?? 0);
     $qty     = max(1, min(MAX_QUANTITY, (int)($body['quantity'] ?? 1)));
     $isStaple = filter_var($body['is_staple'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    $isNotNeeded = filter_var($body['is_not_needed'] ?? false, FILTER_VALIDATE_BOOLEAN);
     $imagePath = null;
     $hasImageUpload = $isMultipart
         && isset($_FILES['image'])
@@ -630,15 +660,15 @@ if ('POST' === $method && null === $id && '' === $sub) {
 
     $dbh->beginTransaction();
     $stmt = $dbh->prepare(
-        'INSERT INTO grocery_items (group_id, created_by, name, image_path, is_staple, quantity) VALUES (:g, :u, :n, :img, :staple, :q)'
+        'INSERT INTO grocery_items (group_id, created_by, name, image_path, is_staple, is_not_needed, quantity) VALUES (:g, :u, :n, :img, :staple, :not_needed, :q)'
     );
-    $stmt->execute([':g' => $groupId, ':u' => $uid, ':n' => $name, ':img' => $imagePath, ':staple' => $isStaple ? 1 : 0, ':q' => $qty]);
+    $stmt->execute([':g' => $groupId, ':u' => $uid, ':n' => $name, ':img' => $imagePath, ':staple' => $isStaple ? 1 : 0, ':not_needed' => $isNotNeeded ? 1 : 0, ':q' => $qty]);
     $itemId = (int)$dbh->lastInsertId();
 
     logActivity($dbh, $groupId, $uid, $itemId, 'added', $name, $qty);
     $dbh->commit();
 
-    jsonOut(['id' => $itemId, 'name' => $name, 'image_path' => $imagePath, 'is_staple' => $isStaple, 'quantity' => $qty], 201);
+    jsonOut(['id' => $itemId, 'name' => $name, 'image_path' => $imagePath, 'is_staple' => $isStaple, 'is_not_needed' => $isNotNeeded, 'quantity' => $qty], 201);
 }
 
 // POST /api/items/{id}/comments

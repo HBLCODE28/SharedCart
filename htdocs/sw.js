@@ -1,10 +1,10 @@
 'use strict';
 
-const CACHE_NAME = 'sharedcart-shell-v3';
+const CACHE_NAME = 'sharedcart-shell-v4-not-needed';
 const APP_SHELL = [
   '/index.html',
-  '/style.css?v=20261028-2',
-  '/app.js?v=20261028-4',
+  '/style.css?v=20261119-1',
+  '/app.js?v=20261119-1',
   '/favicon.svg',
   '/img/tabler-icons.svg',
   '/vendor/jquery-3.7.1.min.js?v=3.7.1-full-1',

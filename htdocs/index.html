@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="preconnect" href="https://googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&family=Karantina:wght@700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20261116-2">
+  <link rel="stylesheet" href="style.css?v=20261119-1">
   </head>
   <body>
 
@@ -225,6 +225,14 @@
         </div>
       </div>
 
+      <div id="itemListTabs" class="item-list-tabs" role="tablist" aria-label="בחירת רשימה">
+        <button id="tabShopping" class="item-list-tab active" type="button" role="tab" aria-selected="true" aria-controls="itemList" data-item-list="shopping">
+          <span class="item-list-tab-title">לקנות</span><span class="item-list-tab-count" id="shoppingCount">0</span>
+        </button>
+        <button id="tabNotNeeded" class="item-list-tab" type="button" role="tab" aria-selected="false" aria-controls="itemList" data-item-list="not_needed" tabindex="-1">
+          <span class="item-list-tab-title">לא צריך</span><span class="item-list-tab-count" id="notNeededCount">0</span>
+        </button>
+      </div>
       <div class="parchment">
         <ul id="itemList" class="item-list" aria-label="פריטים לקנייה"></ul>
         <p id="emptyState" class="empty-state hidden"><span>הרשימה ריקה</span><svg class="icon icon-tabler icon-tabler-shopping-cart tabler-icon" aria-hidden="true" focusable="false"><use href="/img/tabler-icons.svg#tabler-shopping-cart"></use></svg></p>
@@ -431,6 +439,10 @@
         <button id="itemActionsClose" type="button" class="item-actions-close" aria-label="סגור פעולות"><svg class="icon icon-tabler icon-tabler-x tabler-icon" aria-hidden="true" focusable="false"><use href="/img/tabler-icons.svg#tabler-x"></use></svg></button>
       </div>
       <div class="item-actions-options">
+        <button id="btnItemActionMove" type="button" class="item-action-option">
+          <span class="item-action-icon" aria-hidden="true"><svg class="icon icon-tabler icon-tabler-refresh tabler-icon" aria-hidden="true" focusable="false"><use href="/img/tabler-icons.svg#tabler-refresh"></use></svg></span>
+          <span id="itemActionMoveText" class="item-action-text">העבר ללא צריך</span>
+        </button>
         <button id="btnItemActionComments" type="button" class="item-action-option">
           <span class="item-action-icon" aria-hidden="true"><svg class="icon icon-tabler icon-tabler-message-circle tabler-icon" aria-hidden="true" focusable="false"><use href="/img/tabler-icons.svg#tabler-message-circle"></use></svg></span>
           <span id="itemActionCommentsText" class="item-action-text">הוסף הערה</span>
@@ -544,6 +556,6 @@
   <script src="vendor/jquery-3.7.1.min.js?v=3.7.1-full-1"></script>
   <script src="vendor/qrcode.min.js?v=1.0.0"></script>
   <script src="vendor/jsQR.js?v=1.4.0"></script>
-<script src="app.js?v=20261116-1"></script>
+<script src="app.js?v=20261119-1"></script>
   </body>
   </html>

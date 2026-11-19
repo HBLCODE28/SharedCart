@@ -249,7 +249,7 @@ function applyMainLanguage() {
     $('#kitchenCameraClose').attr('aria-label', uiText('סגור מצלמה', 'Close camera'));
     $('#btnKitchenCameraCapture').text(uiText('צלם תמונה', 'Take photo'));
     $('#btnKitchenChooseImage').text(uiText('בחר תמונה', 'Choose image'));
-    $('#itemList').attr('aria-label', uiText('פריטים לקנייה', 'Shopping items'));
+    updateItemListTabs();
     $('#addItemForm').attr('aria-label', text.addItem);
     $('#bottomNav').attr('aria-label', uiText('ניווט', 'Navigation'));
     $('#memberJoinRequestList').attr('aria-label', uiText('בקשות הצטרפות', 'Join requests'));
@@ -264,6 +264,7 @@ $('#groupMemberLimit').closest('label').contents().filter(function () { return t
     $('#groupAdminContentEmpty').text(uiText('אין תוכן פעיל בקבוצה.', 'There is no active content in this group.'));
     $('#btnDeleteMyAccount').text(uiText('מחיקת חשבון', 'Delete account'));
     $('#itemActionImageText').text(uiText('הוסף תמונה', 'Add image'));
+    $('#itemListTabs').attr('aria-label', uiText('בחירת רשימה', 'Choose a list'));
     $('#btnItemActionStapleInfo .item-action-text').text(uiText('הסבר על מוצר ברזל', 'About staple items'));
     $('#shareChoiceClose').attr('aria-label', uiText('סגור שיתוף', 'Close sharing'));
     $('#shareChoiceTitle').text(uiText('שתף קבוצה', 'Share group'));
@@ -320,6 +321,8 @@ let currentGroupCanDelete = false;
 let currentGroupName      = '';
 let currentUserId         = null;
 let itemsLoadRequestId    = 0;
+let currentItemListTab    = 'shopping';
+let cachedGroupItems      = [];
 let authStateVersion      = 0;
 let hasAuthenticatedSession = false;
 let currentUsername       = '';
@@ -946,6 +949,7 @@ function openItemActionsModal(context, trigger) {
     $('#itemActionCommentsText').text(commentCount > 0 ? uiText('הצג הערות', 'View comments') : uiText('הוסף הערה', 'Add comment'));
     $('#itemActionCommentsCount').text(commentCount).toggleClass('hidden', commentCount < 1);
     $('#itemActionImageText').text(itemActionsContext.hasImage ? uiText('החלף תמונה', 'Replace image') : uiText('הוסף תמונה', 'Add image'));
+    $('#itemActionMoveText').text(itemActionsContext.isNotNeeded ? uiText('העבר לקניות', 'Move to shopping') : uiText('העבר ללא צריך', 'Move to not needed'));
     const isStaple = !!itemActionsContext.isStaple;
     $('#btnItemActionDelete').toggleClass('hidden', !itemActionsContext.canDelete || (isStaple && !currentGroupCanRename));
     $('#btnItemActionStapleInfo').toggleClass('hidden', !isStaple);
@@ -970,6 +974,13 @@ function hideItemActionsModal(restoreFocus = true) {
 $('#itemActionsClose').on('click', () => hideItemActionsModal());
 $('#itemActionsModal').on('click', event => {
     if (event.target && event.target.id === 'itemActionsModal') hideItemActionsModal();
+});
+$('#btnItemActionMove').on('click', () => {
+    const context = itemActionsContext;
+    if (!context) return;
+    hideItemActionsModal(false);
+    itemActionsReturnFocus = null;
+    moveItemBetweenLists(context.id, !context.isNotNeeded);
 });
 $('#btnItemActionComments').on('click', () => {
     const context = itemActionsContext;
@@ -1875,6 +1886,10 @@ function showItems(groupId, groupName, canRename = false, canDelete = false) {
     currentGroupCanRename = !!canRename;
     currentGroupCanDelete = !!canDelete;
     currentGroupName = String(groupName || '').trim();
+    currentItemListTab = 'shopping';
+    cachedGroupItems = [];
+    updateItemListTabs();
+    $('#itemList').empty();
     hideExistingItemSheet();
     sessionStorage.setItem('last_group', JSON.stringify({
         id: currentGroupId,
@@ -1987,6 +2002,7 @@ function loadItems() {
         })
         .fail(xhr => {
             if (requestedGroupId !== currentGroupId || requestId !== itemsLoadRequestId) return;
+            cachedGroupItems = [];
             $('#itemList').empty();
             $('#emptyState').removeClass('hidden').text(uiText('לא ניתן לטעון את הרשימה כרגע', 'The list cannot be loaded right now'));
             alert(apiErr(xhr));
@@ -2011,17 +2027,76 @@ function resetNewItemComposer() {
     renderNewItemImageButton(false);
 }
 
-function renderItems(items) {
+// Both tabs display the same shared group dataset; only one is visible at a time.
+function updateItemListTabs() {
+    const isNotNeeded = currentItemListTab === 'not_needed';
+    $('#shoppingCount').text(cachedGroupItems.filter(item => !Number(item.is_not_needed)).length);
+    $('#notNeededCount').text(cachedGroupItems.filter(item => !!Number(item.is_not_needed)).length);
+    $('#itemListTabs .item-list-tab').each(function () {
+        const selected = $(this).data('item-list') === currentItemListTab;
+        $(this).toggleClass('active', selected)
+            .attr('aria-selected', selected ? 'true' : 'false')
+            .attr('tabindex', selected ? '0' : '-1');
+    });
+    $('#tabShopping .item-list-tab-title').text(uiText('לקנות', 'To buy'));
+    $('#tabNotNeeded .item-list-tab-title').text(uiText('לא צריך', 'Not needed'));
+    $('#itemList').attr('aria-label', isNotNeeded ? uiText('מצרכים שלא צריך לקנות', 'Items not needed') : uiText('פריטים לקנייה', 'Shopping items'));
+    const addLabel = isNotNeeded ? uiText('הוסף ללא צריך', 'Add to not needed') : uiText('הוסף פריט', 'Add item');
+    $('#addItemForm').attr('aria-label', addLabel);
+    $('#addItemForm .add-btn').text(addLabel).attr('aria-label', addLabel);
+    $('#newItemName').attr('placeholder', isNotNeeded ? uiText('שם מצרך שלא צריך לקנות', 'Item not needed') : MAIN_LANGUAGE_TEXT[currentLanguage].itemPlaceholder);
+}
+
+function selectItemListTab(tab, focusTab = false) {
+    if (tab !== 'shopping' && tab !== 'not_needed') return;
+    currentItemListTab = tab;
+    updateItemListTabs();
+    renderVisibleItems();
+    if (focusTab) $('#itemListTabs [data-item-list="' + tab + '"]').trigger('focus');
+}
+
+$('#itemListTabs .item-list-tab').on('click', function () {
+    selectItemListTab($(this).data('item-list'));
+}).on('keydown', function (event) {
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        selectItemListTab(currentItemListTab === 'shopping' ? 'not_needed' : 'shopping', true);
+    }
+});
+
+function renderVisibleItems() {
+    updateItemListTabs();
+    const isNotNeeded = currentItemListTab === 'not_needed';
+    const visibleItems = cachedGroupItems.filter(item => !!Number(item.is_not_needed) === isNotNeeded);
     const $list = $('#itemList').empty();
-    $('#emptyState').toggleClass('hidden', !!items.length);
-    items.forEach(item => $list.append(buildRow(item)));
+    $('#emptyState').toggleClass('hidden', !!visibleItems.length);
+    $('#emptyState span').text(isNotNeeded ? uiText('אין כרגע מצרכים ברשימת לא צריך', 'There are no items on the not-needed list') : MAIN_LANGUAGE_TEXT[currentLanguage].emptyList);
+    $('#emptyState use').attr('href', isNotNeeded ? '/img/tabler-icons.svg#tabler-package' : '/img/tabler-icons.svg#tabler-shopping-cart');
+    visibleItems.forEach(item => $list.append(buildRow(item)));
     refreshRelativeTimes();
+}
+
+function renderItems(items) {
+    cachedGroupItems = Array.isArray(items) ? items : [];
+    renderVisibleItems();
+}
+
+function moveItemBetweenLists(itemId, toNotNeeded) {
+    const $row = $(`.item-row[data-item-id="${Number(itemId)}"]`);
+    $row.find('.item-move-btn, .item-check').prop('disabled', true);
+    apiCall('PATCH', `/items/${Number(itemId)}/list-status`, { is_not_needed: !!toNotNeeded })
+        .done(() => loadItems())
+        .fail(xhr => {
+            $row.find('.item-move-btn, .item-check').prop('disabled', false);
+            alert(apiErr(xhr));
+        });
 }
 
 function buildRow(item) {
     const isDone = !!Number(item.is_completed);
     const isCreator = Number(currentUserId) === Number(item.created_by);
     const isStaple = !!Number(item.is_staple);
+    const isNotNeeded = !!Number(item.is_not_needed);
     const canDelete = isStaple ? currentGroupCanRename : (isCreator || currentGroupCanRename);
     const myContributionQty = Math.max(0, Number(item.my_contribution_qty) || 0);
     const totalLimit = Math.max(0, Number(item.total_limit) || 10);
@@ -2039,13 +2114,18 @@ function buildRow(item) {
     const actionName = rawItemName || uiText('פריט עם תמונה', 'Image item');
     const isImageOnly = !rawItemName && !!imagePath;
 
-    const $check = $('<button class="item-check" role="checkbox">')
-        .attr('aria-pressed', isDone)
-        .attr('aria-label', isDone ? uiText('הסר סימון', 'Uncheck item') : uiText('סמן כנלקח', 'Mark as taken'));
-    if (isDone) $check.append(tablerIcon('check'));
-
-    if (isDone) $check.on('click', () => uncompleteItem(item.id));
-    else $check.on('click', () => completeItem(item.id));
+    const $check = $('<button type="button" class="item-check">')
+        .attr('role', isNotNeeded ? 'button' : 'checkbox')
+        .attr('aria-label', isNotNeeded ? uiText('העבר לקניות', 'Move to shopping') : (isDone ? uiText('הסר סימון', 'Uncheck item') : uiText('סמן כנלקח', 'Mark as taken')));
+    if (!isNotNeeded) $check.attr('aria-pressed', isDone);
+    if (isNotNeeded) {
+        $check.addClass('item-return-check').append(tablerIcon('refresh'))
+            .on('click', () => moveItemBetweenLists(item.id, false));
+    } else {
+        if (isDone) $check.append(tablerIcon('check'));
+        if (isDone) $check.on('click', () => uncompleteItem(item.id));
+        else $check.on('click', () => completeItem(item.id));
+    }
 
     const $time = $('<span class="relative-time">')
         .attr('data-time', timeValue || '')
@@ -2073,6 +2153,7 @@ function buildRow(item) {
                 hasImage: !!imagePath,
                 isCreator,
                 isStaple,
+                isNotNeeded,
                 canDelete
             }, this);
         });
@@ -2140,6 +2221,10 @@ function buildRow(item) {
 
     const $body = $('<div class="item-body">').append($head);
     if (rawItemName) $body.append($sub);
+    const $moveButton = $('<button type="button" class="item-move-btn">')
+        .append(tablerIcon('refresh'), $('<span>').text(isNotNeeded ? uiText('העבר לקניות', 'Move to shopping') : uiText('לא צריך', 'Not needed')))
+        .attr('aria-label', isNotNeeded ? uiText('העבר את הפריט לקניות', 'Move item to shopping') : uiText('העבר את הפריט ללא צריך', 'Move item to not needed'))
+        .on('click', () => moveItemBetweenLists(item.id, !isNotNeeded));
 
     // Keep quantity controls as a direct row child. In the RTL row this places
     // them at the far left, away from the item name on the right.
@@ -2147,8 +2232,35 @@ function buildRow(item) {
         .attr('data-item-id', item.id)
         .toggleClass('image-only', isImageOnly)
         .toggleClass('staple-item', isStaple)
-        .append($check, $itemActions, $body, $qtyControl);
+        .toggleClass('not-needed-item', isNotNeeded)
+        .append($check, $itemActions, $body, $qtyControl, $moveButton);
     return $row;
+}
+
+function handleExistingItemConflict(xhr, name, quantity, isNotNeeded) {
+    if (xhr.status !== 409) return false;
+    const response = xhr.responseJSON || {};
+    const existingItem = response.existing_item;
+    if (!existingItem) return false;
+
+    if (!!Number(existingItem.is_not_needed) !== isNotNeeded) {
+        const destination = isNotNeeded ? uiText('לא צריך', 'Not needed') : uiText('לקנות', 'To buy');
+        const question = uiText(`"${name}" נמצא ברשימה השנייה. להעביר אותו אל "${destination}"?`, `"${name}" is in the other list. Move it to "${destination}"?`);
+        if (confirm(question)) {
+            moveItemBetweenLists(existingItem.id, isNotNeeded);
+            resetNewItemComposer();
+        }
+        return true;
+    }
+
+    if (response.can_add_to_existing) {
+        showExistingItemSheet(existingItem, quantity);
+    } else if (Number(existingItem.total_remaining) <= 0) {
+        alert(uiText(`"${name}" כבר קיים, אבל הגעת למגבלת הכמות של 10.`, `"${name}" already exists, but the quantity limit of 10 has been reached.`));
+    } else {
+        alert(uiText(`"${name}" כבר קיים כרגע אבל מסומן כהושלם.`, `"${name}" already exists and is marked as completed.`));
+    }
+    return true;
 }
 
 $('#addItemForm').on('submit', event => {
@@ -2156,6 +2268,7 @@ $('#addItemForm').on('submit', event => {
     const name = $('#newItemName').val().trim();
     const quantity = parseInt($('#newItemQty').val(), 10) || 1;
     const isStaple = $('#newItemStaple').is(':checked');
+    const isNotNeeded = currentItemListTab === 'not_needed';
     const imageFile = pendingNewItemImage || ($('#newItemImage')[0] && $('#newItemImage')[0].files ? $('#newItemImage')[0].files[0] : null);
 
     if (!name && !imageFile) {
@@ -2169,6 +2282,7 @@ $('#addItemForm').on('submit', event => {
         formData.append('name', name);
         formData.append('quantity', String(quantity));
         formData.append('is_staple', isStaple ? '1' : '0');
+        formData.append('is_not_needed', isNotNeeded ? '1' : '0');
         formData.append('image', imageFile);
 
         apiUpload('POST', '/items', formData)
@@ -2177,34 +2291,18 @@ $('#addItemForm').on('submit', event => {
                 loadItems();
             })
             .fail(xhr => {
-                alert(apiErr(xhr));
+                if (!handleExistingItemConflict(xhr, name, quantity, isNotNeeded)) alert(apiErr(xhr));
             });
         return;
     }
 
-    apiCall('POST', '/items', { group_id: currentGroupId, name, quantity, is_staple: isStaple })
+    apiCall('POST', '/items', { group_id: currentGroupId, name, quantity, is_staple: isStaple, is_not_needed: isNotNeeded })
         .done(() => {
             resetNewItemComposer();
             loadItems();
         })
         .fail(xhr => {
-            if (xhr.status === 409) {
-                const response = xhr.responseJSON || {};
-                const existingItem = response.existing_item;
-                if (existingItem) {
-                    if (response.can_add_to_existing) {
-                        showExistingItemSheet(existingItem, quantity);
-                    } else {
-                        if (Number(existingItem.total_remaining) <= 0) {
-                            alert(`"${name}" כבר קיים, אבל הגעת למגבלת הכמות של 10.`);
-                        } else {
-                            alert(`"${name}" כבר קיים כרגע אבל מסומן כהושלם.`);
-                        }
-                    }
-                    return;
-                }
-            }
-            alert(apiErr(xhr));
+            if (!handleExistingItemConflict(xhr, name, quantity, isNotNeeded)) alert(apiErr(xhr));
         });
 });
 

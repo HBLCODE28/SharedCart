@@ -2651,3 +2651,140 @@ body.report-modal-open{overflow:hidden}
   .join-qr-btn{padding-inline:10px}
   .join-qr-btn span{font-size:12px}
 }
+
+/* Separate "To buy" and "Not needed" lists - compact touch-first interface */
+.item-list-tabs{
+  position:sticky;
+  top:var(--app-header-height,72px);
+  z-index:45;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  gap:5px;
+  max-width:760px;
+  margin:12px auto 0;
+  padding:5px;
+  background:rgba(255,255,255,.83);
+  border:1px solid var(--border);
+  border-radius:22px;
+  box-shadow:0 5px 16px rgba(27,73,101,.10);
+  -webkit-backdrop-filter:blur(10px);
+  backdrop-filter:blur(10px);
+}
+.item-list-tab{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
+  min-width:0;
+  min-height:47px;
+  padding:9px 11px;
+  border:1px solid transparent;
+  border-radius:17px;
+  background:transparent;
+  color:var(--cyan-dark);
+  font-family:inherit;
+  font-size:15px;
+  font-weight:800;
+  line-height:1.25;
+  white-space:nowrap;
+  cursor:pointer;
+  transition:background-color .18s,border-color .18s,color .18s;
+}
+.item-list-tab.active{
+  color:#fff;
+  background:linear-gradient(130deg,var(--cyan),var(--teal));
+  box-shadow:0 3px 10px rgba(27,73,101,.19);
+}
+.item-list-tab:not(.active):hover{background:var(--cyan-light)}
+.item-list-tab-count{
+  min-width:26px;
+  height:25px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  padding:2px 6px;
+  border-radius:30px;
+  color:var(--cyan-dark);
+  background:rgba(202,233,255,.74);
+  font-size:12px;
+  font-variant-numeric:tabular-nums;
+}
+.item-list-tab.active .item-list-tab-count{
+  color:var(--cyan-dark);
+  background:rgba(255,255,255,.95);
+}
+.item-list-tab:focus-visible,.item-move-btn:focus-visible{
+  outline:3px solid var(--cyan);
+  outline-offset:2px;
+}
+.item-list-tabs + .parchment{margin-top:10px}
+.item-move-btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  width:max-content;
+  max-width:100%;
+  min-height:31px;
+  margin-top:7px;
+  padding:4px 10px;
+  border:1px solid rgba(38,126,143,.25);
+  border-radius:50px;
+  background:rgba(202,233,255,.56);
+  color:var(--cyan-dark);
+  font:700 12px/1.25 'Heebo',sans-serif;
+  cursor:pointer;
+}
+.item-move-btn:hover{background:var(--cyan-light);border-color:var(--cyan)}
+.item-move-btn .tabler-icon{width:15px;height:15px}
+.item-move-btn:disabled{cursor:wait;opacity:.6}
+.item-return-check{background:rgba(202,233,255,.45);color:var(--cyan-dark)}
+.item-return-check .tabler-icon{width:19px;height:19px}
+.not-needed-item .item-name{color:var(--text)}
+.not-needed-item .item-move-btn{background:rgba(255,255,255,.85)}
+
+@media(max-width:600px){
+  .item-list-tabs{
+    margin:10px max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left));
+    max-width:none;
+    border-radius:19px;
+    padding:4px;
+  }
+  .item-list-tab{min-height:44px;padding:8px 6px;border-radius:15px;font-size:14px;gap:5px}
+  .item-list-tab-count{min-width:23px;height:23px;padding:2px 5px;font-size:12px}
+  .item-list-tabs + .parchment{margin-top:10px}
+  .item-row{row-gap:5px}
+  .item-row .item-move-btn{margin-top:8px;min-height:32px}
+  #screenItems .add-bar .add-btn{font-size:13px;padding-inline:7px;white-space:normal}
+}
+@media(max-width:360px){
+  .item-list-tab{font-size:13px;gap:4px}
+  .item-list-tabs{border-radius:16px}
+  .item-move-btn{font-size:11px;padding-inline:8px}
+}
+
+/* Mobile rows: transfer action shares the second row with quantity controls. */
+.item-row > .item-move-btn{flex:0 0 auto;margin-top:0}
+@media(max-width:600px){
+  .item-row > .item-move-btn{
+    grid-column:3;
+    grid-row:2;
+    justify-self:start;
+    align-self:center;
+    margin:0;
+    z-index:1;
+  }
+  .item-row > .qty-control{z-index:1}
+}
+@media(max-width:360px){
+  .item-row > .item-move-btn{font-size:11px}
+  .item-row > .qty-control{gap:3px}
+}
+@media(max-width:360px){
+  /* Extra-narrow phones need a separate row to prevent transfer/quantity overlap. */
+  .item-row > .item-move-btn{
+    grid-column:1 / -1;
+    grid-row:3;
+    justify-self:start;
+  }
+}
