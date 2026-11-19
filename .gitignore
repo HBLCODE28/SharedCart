@@ -3,6 +3,11 @@ node_modules/
 playwright-report/
 qa/
 test-results/
+/migration-share.sql
+/package.json
+/package-lock.json
+/playwright.config.js
+/schema.sql
 # Configuration and secrets
 *[cC][oO][nN][fF][iI][gG]*
 *[sS][eE][tT][tT][iI][nN][gG]*
