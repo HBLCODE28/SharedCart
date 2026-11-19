@@ -1,4 +1,9 @@
-﻿# Configuration and secrets
+﻿
+node_modules/
+playwright-report/
+qa/
+test-results/
+# Configuration and secrets
 *[cC][oO][nN][fF][iI][gG]*
 *[sS][eE][tT][tT][iI][nN][gG]*
 *[sS][eE][cC][rR][eE][tT]*
