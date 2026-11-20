@@ -50,7 +50,7 @@ const MAIN_LANGUAGE_TEXT = {
         minPassword: 'לפחות 8 תווים', yourName: 'השם שלך', passwordAgain: 'יש להזין את הסיסמה שוב', sendCode: 'שלח קוד אימות',
         backToLogin: 'חזרה לכניסה', verificationCode: 'קוד אימות', verifyCode: 'אמת קוד', changePassword: 'שינוי סיסמה', newPassword: 'סיסמה חדשה',
         changePasswordButton: 'שנה סיסמה', codeVerified: 'הקוד אומת. אפשר להגדיר סיסמה חדשה.', copy: 'העתק', close: 'סגור',
-        existingItem: 'הפריט כבר קיים', addExisting: 'הוסף לכמות הקיימת', emptyList: 'הרשימה ריקה', quantity: 'כמות', leaveGroup: 'עזוב קבוצה',
+        existingItem: 'הפריט כבר קיים', addExisting: 'הוסף לכמות הקיימת', emptyList: 'ריק לי מידי...', quantity: 'כמות', leaveGroup: 'עזוב קבוצה',
         clearHistory: 'מחק היסטוריה', noActivity: 'אין פעילות עדיין', groupMembers: 'חברי הקבוצה', noMembers: 'אין חברים בקבוצה',
         deleteGroup: 'מחק קבוצה', moreActions: 'פעולות נוספות', message: 'הודעה', ok: 'אישור', itemActions: 'פעולות לפריט',
         addComment: 'הוסף הערה', reportItem: 'דווח על הפריט', deleteItem: 'מחק פריט', commentsTitle: 'הערות', noComments: 'אין הערות לפריט הזה.',
@@ -71,7 +71,7 @@ const MAIN_LANGUAGE_TEXT = {
         minPassword: 'At least 8 characters', yourName: 'Your name', passwordAgain: 'Enter the password again', sendCode: 'Send verification code',
         backToLogin: 'Back to sign in', verificationCode: 'Verification code', verifyCode: 'Verify code', changePassword: 'Change password', newPassword: 'New password',
         changePasswordButton: 'Change password', codeVerified: 'The code was verified. You can set a new password.', copy: 'Copy', close: 'Close',
-        existingItem: 'The item already exists', addExisting: 'Add to existing quantity', emptyList: 'The list is empty', quantity: 'Quantity', leaveGroup: 'Leave group',
+        existingItem: 'The item already exists', addExisting: 'Add to existing quantity', emptyList: 'A little too empty here...', quantity: 'Quantity', leaveGroup: 'Leave group',
         clearHistory: 'Clear history', noActivity: 'No activity yet', groupMembers: 'Group members', noMembers: 'No members in this group',
         deleteGroup: 'Delete group', moreActions: 'More actions', message: 'Message', ok: 'OK', itemActions: 'Item actions',
         addComment: 'Add comment', reportItem: 'Report item', deleteItem: 'Delete item', commentsTitle: 'Comments', noComments: 'No comments for this item.',
@@ -179,7 +179,7 @@ function applyMainLanguage() {
     $('#existingItemTitle').text(text.existingItem);
     $('#btnExistingItemAdd').text(text.addExisting);
     $('#btnExistingItemCancel').text(text.cancel);
-    $('#emptyState').text(text.emptyList);
+    $('#emptyState span').text(text.emptyList);
     $('#btnLeaveGroup').text(text.leaveGroup);
     $('#screenActivity .section-label').text(text.history);
     $('#btnClearActivity').text(text.clearHistory);
@@ -391,6 +391,39 @@ function apiUpload(method, endpoint, formData) {
 // Cache keys are scoped to the authenticated user and wiped on explicit logout.
 const OFFLINE_PREFIX = 'sharedcart_offline_v2_';
 const OFFLINE_ID_KEY = 'sharedcart_offline_current_user';
+const SEEN_COMMENTS_PREFIX = 'sharedcart_seen_comments_v1_';
+
+// Seen acknowledgments belong to the current user and device. A new comment
+// changes the fingerprint, so an earlier acknowledgment no longer hides it.
+function seenCommentKey() {
+    return currentUserId ? SEEN_COMMENTS_PREFIX + currentUserId : null;
+}
+function commentFingerprint(item) {
+    if (!item || !Number(item.comment_count) || !item.latest_comment_body) return '';
+    return JSON.stringify([
+        Number(item.comment_count), item.latest_comment_created_at || item.latest_comment_ts || '',
+        item.latest_comment_user || '', item.latest_comment_body
+    ]);
+}
+function hasSeenItemComments(item) {
+    const key = seenCommentKey();
+    const fingerprint = commentFingerprint(item);
+    if (!key || !fingerprint || !currentGroupId) return false;
+    try {
+        const seen = JSON.parse(localStorage.getItem(key) || '{}');
+        return seen[`${currentGroupId}:${item.id}`] === fingerprint;
+    } catch (err) { return false; }
+}
+function acknowledgeItemComments(item) {
+    const key = seenCommentKey();
+    const fingerprint = commentFingerprint(item);
+    if (!key || !fingerprint || !currentGroupId) return;
+    try {
+        const seen = JSON.parse(localStorage.getItem(key) || '{}');
+        seen[`${currentGroupId}:${item.id}`] = fingerprint;
+        localStorage.setItem(key, JSON.stringify(seen));
+    } catch (err) { /* If storage is unavailable, the reminder still works. */ }
+}
 let offlineSyncRunning = false;
 let offlineLoadFailed = false;
 let noteReminderContext = null;
@@ -471,7 +504,9 @@ function visibleItemsWithPending() {
     const byId = new Map(items.map(item => [Number(item.id), item]));
     for (const action of currentPendingActions()) {
         const isFailed = action.state === 'failed';
-        const statusLabel = isFailed ? uiText('שגיאת סנכרון', 'Sync failed') : uiText('ממתין לסנכרון', 'Waiting to sync');
+        // Normal online requests are optimistic and do not need a sync warning.
+        const warnSync = isFailed || !navigator.onLine || offlineLoadFailed;
+        const statusLabel = !warnSync ? '' : isFailed ? uiText('שגיאת סנכרון', 'Sync failed') : uiText('ממתין לסנכרון', 'Waiting to sync');
         if (action.type === 'add') {
             const payload = action.payload || {};
             const temp = {
@@ -535,7 +570,8 @@ function updateOfflineStatus() {
     const failed = all.filter(a => a.state === 'failed').length;
     const pending = all.length - failed;
     const disconnected = !navigator.onLine || offlineLoadFailed;
-    if (!disconnected && all.length === 0) { $bar.addClass('hidden'); return; }
+    // Do not flash a warning for every normally connected, in-flight request.
+    if (!disconnected && !failed) { $bar.addClass('hidden'); return; }
     let message = disconnected ? uiText('אין חיבור לשרת. מוצגת הרשימה האחרונה.', 'Offline: showing your last saved list.') : '';
     if (pending) message += (message ? ' ' : '') + uiText(`${pending} פעולות ממתינות לסנכרון.`, `${pending} changes waiting to sync.`);
     if (failed) {
@@ -1209,7 +1245,7 @@ function openItemActionsModal(context, trigger) {
     const commentCount = Math.max(0, Number(itemActionsContext.commentCount) || 0);
     $('#itemActionsTitle').text(name ? uiText(`פעולות - ${name}`, `Actions - ${name}`) : uiText('פעולות לפריט', 'Item actions'));
     $('#itemActionCommentsText').text(commentCount > 0 ? uiText('הצג הערות', 'View comments') : uiText('הוסף הערה', 'Add comment'));
-    $('#itemActionCommentsCount').text(commentCount).toggleClass('hidden', commentCount < 1);
+    $('#itemActionCommentsCount').text(commentCount).toggleClass('hidden', !itemActionsContext.showCommentCount);
     $('#itemActionImageText').text(itemActionsContext.hasImage ? uiText('החלף תמונה', 'Replace image') : uiText('הוסף תמונה', 'Add image'));
     $('#itemActionMoveText').text(itemActionsContext.isNotNeeded ? uiText('העבר לקניות', 'Move to shopping') : uiText('העבר ללא צריך', 'Move to not needed'));
     const isStaple = !!itemActionsContext.isStaple;
@@ -2356,7 +2392,7 @@ function renderVisibleItems() {
     const visibleItems = visibleItemsWithPending().filter(item => !!Number(item.is_not_needed) === isNotNeeded);
     const $list = $('#itemList').empty();
     $('#emptyState').toggleClass('hidden', !!visibleItems.length);
-    $('#emptyState span').text(isNotNeeded ? uiText('אין כרגע מצרכים ברשימת לא צריך', 'There are no items on the not-needed list') : MAIN_LANGUAGE_TEXT[currentLanguage].emptyList);
+    $('#emptyState span').text(MAIN_LANGUAGE_TEXT[currentLanguage].emptyList);
     $('#emptyState use').attr('href', isNotNeeded ? '/img/tabler-icons.svg#tabler-package' : '/img/tabler-icons.svg#tabler-shopping-cart');
     visibleItems.forEach(item => $list.append(buildRow(item)));
     refreshRelativeTimes();
@@ -2389,6 +2425,9 @@ function buildRow(item) {
         createdAt: item.latest_comment_ts || item.latest_comment_created_at || ''
     } : null;
     const commentCount = Math.max(0, Number(item.comment_count) || (latestComment ? 1 : 0));
+    // The latest note is visible in the row. Show a numeric badge only when
+    // there are multiple comments that haven't been acknowledged yet.
+    const showCommentCount = commentCount > 1 && !hasSeenItemComments(item);
     const imagePath = String(item.image_path || '').trim();
     const rawItemName = String(item.name || '').trim();
     const actionName = rawItemName || uiText('פריט עם תמונה', 'Image item');
@@ -2422,7 +2461,9 @@ function buildRow(item) {
 
 
     const $actionsButton = $('<button type="button" class="item-actions-trigger">')
-        .attr('aria-label', commentCount > 0 ? uiText(`פעולות לפריט, ${commentCount} הערות`, `Item actions, ${commentCount} comments`) : uiText('פעולות לפריט', 'Item actions'))
+        .attr('aria-label', showCommentCount
+            ? uiText(`פעולות לפריט, ${commentCount} הערות`, `Item actions, ${commentCount} comments`)
+            : commentCount > 0 ? uiText('פעולות לפריט עם הערות', 'Item actions with comments') : uiText('פעולות לפריט', 'Item actions'))
         .append(tablerIcon('dots'))
         .on('click', function () {
             openItemActionsModal({
@@ -2430,6 +2471,7 @@ function buildRow(item) {
                 name: rawItemName,
                 actionName,
                 commentCount,
+                showCommentCount,
                 hasImage: !!imagePath,
                 isCreator,
                 isStaple,
@@ -2437,7 +2479,7 @@ function buildRow(item) {
                 canDelete
             }, this);
         });
-    if (commentCount > 0) {
+    if (showCommentCount) {
         $actionsButton.append($('<span class="item-comment-badge" aria-hidden="true">').text(commentCount));
     }
 
@@ -2628,8 +2670,8 @@ $('#addItemForm').on('submit', event => {
 
 function requestCompleteItem(item, trigger) {
     if (Number(item.id) < 1) return;
-    if (Number(item.comment_count) > 0 && item.latest_comment_body) {
-        noteReminderContext = { itemId: Number(item.id), itemName: item.name || '', trigger };
+    if (Number(item.comment_count) > 0 && item.latest_comment_body && !hasSeenItemComments(item)) {
+        noteReminderContext = { itemId: Number(item.id), itemName: item.name || '', trigger, item };
         $('#itemNoteReminderTitle').text(uiText('שמתם לב להערות?', 'Did you notice the comments?'));
         $('#itemNoteReminderItem').text(item.name || uiText('פריט עם תמונה', 'Image item'));
         const author = item.latest_comment_user ? `${item.latest_comment_user}: ` : '';
@@ -2654,7 +2696,10 @@ function closeNoteReminder() {
 }
 $('#btnItemNoteConfirm').on('click', () => {
     const context = closeNoteReminder();
-    if (context) completeItem(context.itemId);
+    if (context) {
+        acknowledgeItemComments(context.item);
+        completeItem(context.itemId);
+    }
 });
 $('#btnItemNoteCancel').on('click', () => {
     const context = closeNoteReminder();

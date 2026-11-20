@@ -1,10 +1,10 @@
 'use strict';
 
-const CACHE_NAME = 'sharedcart-shell-v5-offline-notes';
+const CACHE_NAME = 'sharedcart-shell-v6-comment-status';
 const APP_SHELL = [
   '/index.html',
-  '/style.css?v=20261120-1',
-  '/app.js?v=20261120-1',
+  '/style.css?v=20261120-2',
+  '/app.js?v=20261120-2',
   '/favicon.svg',
   '/img/tabler-icons.svg',
   '/vendor/jquery-3.7.1.min.js?v=3.7.1-full-1',
