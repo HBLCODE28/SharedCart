@@ -4,10 +4,6 @@
 
 SharedCart is a mobile-friendly PHP web application for keeping a group shopping list in sync. Create a group, invite people, add what is needed, and let everyone see when an item has been picked up.
 
-<p align="center">
-  <img src="docs/sharedcart-workflow.svg" alt="SharedCart workflow: create a group, share an invite, collaborate on a shopping list, and receive updates." width="860">
-</p>
-
 ## What it does
 
 - Create shopping groups from an empty list or a quick-start template.
