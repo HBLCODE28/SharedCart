@@ -409,7 +409,7 @@ if ('uncomplete' === $sub && null !== $id && 'PATCH' === $method) {
 
     if (!$item) jsonError('Item not found', 404);
     if (!isMember($dbh, (int)$item['group_id'], $uid)) jsonError('Forbidden', 403);
-    if (!$item['is_completed']) jsonError('Not completed');
+    if (!$item['is_completed']) jsonOut(['message' => 'Already uncompleted']);
 
     $stmt = $dbh->prepare(
         'UPDATE grocery_items SET is_completed=0, completed_by=NULL, completed_at=NULL WHERE id=:id'
@@ -423,7 +423,7 @@ if ('complete' === $sub && null !== $id && 'PATCH' === $method) {
 
     if (!$item) jsonError('Item not found', 404);
     if (!isMember($dbh, (int)$item['group_id'], $uid)) jsonError('Forbidden', 403);
-    if ((int)$item['is_completed'] === 1) jsonError('Already completed');
+    if ((int)$item['is_completed'] === 1) jsonOut(['message' => 'Already completed', 'email_notification' => 'not_requested']);
     if ((int)$item['is_not_needed'] === 1) jsonError('Item is not on the shopping list', 400);
 
     $dbh->beginTransaction();
@@ -431,9 +431,13 @@ if ('complete' === $sub && null !== $id && 'PATCH' === $method) {
     $stmt = $dbh->prepare(
         'UPDATE grocery_items
             SET is_completed = 1, completed_by = :uid, completed_at = NOW()
-          WHERE id = :id'
+          WHERE id = :id AND is_completed = 0 AND is_not_needed = 0 AND deleted_at IS NULL'
     );
     $stmt->execute([':uid' => $uid, ':id' => $id]);
+    if ($stmt->rowCount() === 0) {
+        $dbh->rollBack();
+        jsonOut(['message' => 'Already handled', 'email_notification' => 'not_requested']);
+    }
 
     // The group-management setting controls email to the group creator.
     // Only notify when another participant marks an item as taken.
@@ -563,10 +567,10 @@ if ('GET' === $method && null === $id && '' === $sub) {
                             OR (TRIM(i.name) = \'\' AND al.item_id = i.id)
                         )) AS usage_count,
                     ic.comment_count,
-                    ic.latest_comment_body,
-                    ic.latest_comment_created_at,
-                    ic.latest_comment_ts,
-                    ic.latest_comment_user
+                    latest.body AS latest_comment_body,
+                    latest.created_at AS latest_comment_created_at,
+                    UNIX_TIMESTAMP(latest.created_at) AS latest_comment_ts,
+                    latest_user.username AS latest_comment_user
                FROM grocery_items i
                JOIN users u ON u.id = i.created_by AND u.deleted_at IS NULL
                LEFT JOIN users c ON c.id = i.completed_by AND c.deleted_at IS NULL
@@ -577,17 +581,19 @@ if ('GET' === $method && null === $id && '' === $sub) {
                ) extra ON extra.item_id = i.id
                LEFT JOIN item_contributions my ON my.item_id = i.id AND my.user_id = :uid
                LEFT JOIN (
-                    SELECT c1.item_id,
-                           COUNT(*) AS comment_count,
-                           SUBSTRING_INDEX(GROUP_CONCAT(c1.body ORDER BY c1.id DESC SEPARATOR '|'), '|', 1) AS latest_comment_body,
-                           SUBSTRING_INDEX(GROUP_CONCAT(c1.created_at ORDER BY c1.id DESC SEPARATOR '|'), '|', 1) AS latest_comment_created_at,
-                           SUBSTRING_INDEX(GROUP_CONCAT(UNIX_TIMESTAMP(c1.created_at) ORDER BY c1.id DESC SEPARATOR '|'), '|', 1) AS latest_comment_ts,
-                           SUBSTRING_INDEX(GROUP_CONCAT(u1.username ORDER BY c1.id DESC SEPARATOR '|'), '|', 1) AS latest_comment_user
+                    SELECT c1.item_id, COUNT(*) AS comment_count
                       FROM item_comments c1
                       JOIN users u1 ON u1.id = c1.user_id AND u1.deleted_at IS NULL
                      WHERE c1.deleted_at IS NULL
                      GROUP BY c1.item_id
                ) ic ON ic.item_id = i.id
+               LEFT JOIN item_comments latest ON latest.id = (
+                    SELECT c2.id FROM item_comments c2
+                    JOIN users u2 ON u2.id = c2.user_id AND u2.deleted_at IS NULL
+                    WHERE c2.item_id = i.id AND c2.deleted_at IS NULL
+                    ORDER BY c2.id DESC LIMIT 1
+               )
+               LEFT JOIN users latest_user ON latest_user.id = latest.user_id
               WHERE i.group_id = :g
                 AND i.deleted_at IS NULL
               ORDER BY i.is_completed ASC, i.is_staple DESC, usage_count DESC, i.created_at DESC'
@@ -618,6 +624,10 @@ if ('POST' === $method && null === $id && '' === $sub) {
     $qty     = max(1, min(MAX_QUANTITY, (int)($body['quantity'] ?? 1)));
     $isStaple = filter_var($body['is_staple'] ?? false, FILTER_VALIDATE_BOOLEAN);
     $isNotNeeded = filter_var($body['is_not_needed'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    $clientRequestId = trim((string)($body['client_request_id'] ?? ''));
+    if ($clientRequestId !== '' && !preg_match('/^[a-f0-9-]{36}$/i', $clientRequestId)) {
+        jsonError('Invalid request id', 400);
+    }
     $imagePath = null;
     $hasImageUpload = $isMultipart
         && isset($_FILES['image'])
@@ -629,6 +639,15 @@ if ('POST' === $method && null === $id && '' === $sub) {
     if (!isMember($dbh, $groupId, $uid))   jsonError('Forbidden', 403);
     if ($qty > MAX_ITEM_TOTAL_QTY) jsonError('Contribution limit reached', 400);
     if ('' !== $name) assertContentAllowed($dbh, $name, (int)$uid, 'item_name', 'item');
+
+    // Replayed requests return their original item, even if the response to the
+    // first request was lost. This prevents duplicate offline additions.
+    if ($clientRequestId !== '') {
+        $previous = $dbh->prepare('SELECT id FROM grocery_items WHERE created_by = :uid AND client_request_id = :req LIMIT 1');
+        $previous->execute([':uid' => $uid, ':req' => $clientRequestId]);
+        $existingId = (int)($previous->fetchColumn() ?: 0);
+        if ($existingId) jsonOut(['id' => $existingId, 'message' => 'Already processed', 'replayed' => true]);
+    }
 
     if ($hasImageUpload) {
         $imagePath = saveUploadedItemImage($_FILES['image']);
@@ -660,9 +679,20 @@ if ('POST' === $method && null === $id && '' === $sub) {
 
     $dbh->beginTransaction();
     $stmt = $dbh->prepare(
-        'INSERT INTO grocery_items (group_id, created_by, name, image_path, is_staple, is_not_needed, quantity) VALUES (:g, :u, :n, :img, :staple, :not_needed, :q)'
+        'INSERT INTO grocery_items (group_id, created_by, name, image_path, is_staple, is_not_needed, quantity, client_request_id) VALUES (:g, :u, :n, :img, :staple, :not_needed, :q, :req)'
     );
-    $stmt->execute([':g' => $groupId, ':u' => $uid, ':n' => $name, ':img' => $imagePath, ':staple' => $isStaple ? 1 : 0, ':not_needed' => $isNotNeeded ? 1 : 0, ':q' => $qty]);
+    try {
+        $stmt->execute([':g' => $groupId, ':u' => $uid, ':n' => $name, ':img' => $imagePath, ':staple' => $isStaple ? 1 : 0, ':not_needed' => $isNotNeeded ? 1 : 0, ':q' => $qty, ':req' => $clientRequestId !== '' ? $clientRequestId : null]);
+    } catch (PDOException $e) {
+        $dbh->rollBack();
+        if ($clientRequestId !== '' && (string)$e->getCode() === '23000') {
+            $previous = $dbh->prepare('SELECT id FROM grocery_items WHERE created_by = :uid AND client_request_id = :req LIMIT 1');
+            $previous->execute([':uid' => $uid, ':req' => $clientRequestId]);
+            $existingId = (int)($previous->fetchColumn() ?: 0);
+            if ($existingId) jsonOut(['id' => $existingId, 'message' => 'Already processed', 'replayed' => true]);
+        }
+        throw $e;
+    }
     $itemId = (int)$dbh->lastInsertId();
 
     logActivity($dbh, $groupId, $uid, $itemId, 'added', $name, $qty);

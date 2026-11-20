@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="preconnect" href="https://googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&family=Karantina:wght@700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20261119-1">
+  <link rel="stylesheet" href="style.css?v=20261120-1">
   </head>
   <body>
 
@@ -232,6 +232,13 @@
         <button id="tabNotNeeded" class="item-list-tab" type="button" role="tab" aria-selected="false" aria-controls="itemList" data-item-list="not_needed" tabindex="-1">
           <span class="item-list-tab-title">לא צריך</span><span class="item-list-tab-count" id="notNeededCount">0</span>
         </button>
+      </div>
+      <div id="offlineSyncStatus" class="offline-sync-status hidden" role="status" aria-live="polite">
+        <span id="offlineSyncMessage"></span>
+        <div class="offline-sync-actions">
+          <button id="btnOfflineSyncRetry" class="offline-sync-retry hidden" type="button">נסה לסנכרן</button>
+          <button id="btnOfflineSyncDiscard" class="offline-sync-discard hidden" type="button">בטל פעולות שנכשלו</button>
+        </div>
       </div>
       <div class="parchment">
         <ul id="itemList" class="item-list" aria-label="פריטים לקנייה"></ul>
@@ -468,6 +475,20 @@
     </div>
   </div>
 
+  <div id="itemNoteReminderModal" class="note-reminder-modal hidden" role="dialog" aria-modal="true" aria-labelledby="itemNoteReminderTitle" aria-describedby="itemNoteReminderText">
+    <div class="note-reminder-card">
+      <span class="note-reminder-icon" aria-hidden="true"><svg class="icon icon-tabler tabler-icon"><use href="/img/tabler-icons.svg#tabler-message-circle"></use></svg></span>
+      <h2 id="itemNoteReminderTitle">שמתם לב להערות?</h2>
+      <p id="itemNoteReminderItem" class="note-reminder-item"></p>
+      <p id="itemNoteReminderText" class="note-reminder-text"></p>
+      <p id="itemNoteReminderMore" class="note-reminder-more hidden"></p>
+            <div class="note-reminder-actions">
+        <button id="btnItemNoteConfirm" class="btn-primary" type="button">שמתי לב</button>
+        <button id="btnItemNoteCancel" class="btn-ghost" type="button">לא שמתי לב</button>
+      </div>
+    </div>
+  </div>
+
   <div id="commentsModal" class="comments-modal hidden" role="dialog" aria-modal="true" aria-labelledby="commentsTitle">
     <div class="comments-card">
       <div class="comments-header">
@@ -556,6 +577,6 @@
   <script src="vendor/jquery-3.7.1.min.js?v=3.7.1-full-1"></script>
   <script src="vendor/qrcode.min.js?v=1.0.0"></script>
   <script src="vendor/jsQR.js?v=1.4.0"></script>
-<script src="app.js?v=20261119-1"></script>
+<script src="app.js?v=20261120-1"></script>
   </body>
   </html>

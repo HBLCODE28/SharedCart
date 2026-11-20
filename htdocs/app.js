@@ -295,6 +295,7 @@ function loadCurrentProfile() {
             if (profileStateVersion !== authStateVersion) return;
             hasAuthenticatedSession = true;
             currentUserId = Number(profile.id) || null;
+            if (currentUserId) sessionStorage.setItem(OFFLINE_ID_KEY, String(currentUserId));
             currentUsername = String(profile.username || '');
             currentUserEmail = String(profile.email || '').trim().toLowerCase();
             updateHomeProfileName();
@@ -385,6 +386,261 @@ function apiUpload(method, endpoint, formData) {
     });
 }
 
+
+// Offline shopping state. The authentication token remains in the HttpOnly cookie.
+// Cache keys are scoped to the authenticated user and wiped on explicit logout.
+const OFFLINE_PREFIX = 'sharedcart_offline_v2_';
+const OFFLINE_ID_KEY = 'sharedcart_offline_current_user';
+let offlineSyncRunning = false;
+let offlineLoadFailed = false;
+let noteReminderContext = null;
+
+function offlineStoreKey() {
+    return currentUserId ? OFFLINE_PREFIX + String(currentUserId) : null;
+}
+function readOfflineStore() {
+    const key = offlineStoreKey();
+    if (!key) return { groups: {}, queue: [] };
+    try {
+        const parsed = JSON.parse(localStorage.getItem(key) || '{}');
+        return {
+            groups: parsed.groups && typeof parsed.groups === 'object' ? parsed.groups : {},
+            queue: Array.isArray(parsed.queue) ? parsed.queue : []
+        };
+    } catch (err) { return { groups: {}, queue: [] }; }
+}
+function writeOfflineStore(store) {
+    const key = offlineStoreKey();
+    if (!key) return false;
+    try {
+        localStorage.setItem(key, JSON.stringify(store));
+        return true;
+    } catch (err) {
+        alert(uiText('לא ניתן לשמור פעולות במכשיר (ייתכן שהאחסון מלא). נסו לפנות מקום.',
+            'Cannot save changes on this device (storage may be full). Free up some space.'));
+        return false;
+    }
+}
+function clearOfflineUserStorage() {
+    const key = offlineStoreKey();
+    if (key) localStorage.removeItem(key);
+    sessionStorage.removeItem(OFFLINE_ID_KEY);
+}
+function isConnectionFailure(xhr) {
+    return !navigator.onLine || (xhr && Number(xhr.status) === 0);
+}
+function cacheGroupItems(groupId, items, suggestions) {
+    if (!currentUserId) return;
+    const store = readOfflineStore();
+    store.groups[String(groupId)] = {
+        items: items,
+        suggestions: Array.isArray(suggestions) ? suggestions : [],
+        cached_at: Date.now()
+    };
+    // Keep only the last eight groups in this user's device cache.
+    const groupIds = Object.keys(store.groups);
+    if (groupIds.length > 8) {
+        groupIds.sort((a, b) => (store.groups[b]?.cached_at || 0) - (store.groups[a]?.cached_at || 0));
+        groupIds.slice(8).forEach(id => delete store.groups[id]);
+    }
+    writeOfflineStore(store);
+}
+function loadCachedGroup(groupId) {
+    const cache = readOfflineStore().groups[String(groupId)];
+    if (!cache || !Array.isArray(cache.items)) return false;
+    cachedGroupItems = cache.items;
+    if (Array.isArray(cache.suggestions)) renderSuggestions(cache.suggestions);
+    renderVisibleItems();
+    return true;
+}
+function createOfflineId() {
+    if (crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    // Browser supports HTTPS because the PWA service worker requires it.
+    const values = new Uint8Array(16);
+    crypto.getRandomValues(values);
+    values[6] = (values[6] & 15) | 64;
+    values[8] = (values[8] & 63) | 128;
+    const hex = Array.from(values, v => v.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+}
+function currentPendingActions(groupId = currentGroupId) {
+    return readOfflineStore().queue.filter(action => Number(action.groupId) === Number(groupId));
+}
+function visibleItemsWithPending() {
+    const items = cachedGroupItems.map(item => ({...item}));
+    const byId = new Map(items.map(item => [Number(item.id), item]));
+    for (const action of currentPendingActions()) {
+        const isFailed = action.state === 'failed';
+        const statusLabel = isFailed ? uiText('שגיאת סנכרון', 'Sync failed') : uiText('ממתין לסנכרון', 'Waiting to sync');
+        if (action.type === 'add') {
+            const payload = action.payload || {};
+            const temp = {
+                id: action.localId, name: payload.name, quantity: payload.quantity,
+                base_quantity: payload.quantity, is_completed: 0,
+                is_not_needed: payload.is_not_needed ? 1 : 0,
+                is_staple: payload.is_staple ? 1 : 0,
+                created_by: currentUserId, creator: currentUsername || '',
+                created_ts: action.createdAt / 1000,
+                comment_count: 0, my_contribution_qty: 0, total_limit: 10,
+                total_remaining: 10 - payload.quantity, _pending: statusLabel,
+                _temporary: true
+            };
+            items.unshift(temp);
+            byId.set(Number(temp.id), temp);
+        } else {
+            const item = byId.get(Number(action.itemId));
+            if (!item) continue;
+            if (action.type === 'complete') {
+                item.is_completed = 1;
+                item.completed_ts = action.createdAt / 1000;
+            } else if (action.type === 'uncomplete') {
+                item.is_completed = 0;
+            } else if (action.type === 'move') {
+                item.is_not_needed = action.payload.is_not_needed ? 1 : 0;
+                item.is_completed = 0;
+            }
+            item._pending = statusLabel;
+        }
+    }
+    return items;
+}
+function queueOfflineAction(action) {
+    if (!currentUserId || !currentGroupId) {
+        alert(uiText('כדי לשמור פעולות ללא אינטרנט, התחברו תחילה כשיש חיבור.',
+            'Sign in while online before using offline changes.'));
+        return false;
+    }
+    const store = readOfflineStore();
+    const entry = {
+        id: createOfflineId(),
+        groupId: Number(currentGroupId),
+        createdAt: Date.now(),
+        state: 'pending',
+        ...action
+    };
+    store.queue.push(entry);
+    if (!writeOfflineStore(store)) return false;
+    renderVisibleItems();
+    updateOfflineStatus();
+    if (navigator.onLine) syncOfflineQueue();
+    return true;
+}
+function updateOfflineStatus() {
+    const $bar = $('#offlineSyncStatus');
+    if (!$bar.length) return;
+    if (!currentGroupId || $('#screenItems').hasClass('hidden')) {
+        $bar.addClass('hidden'); return;
+    }
+    const all = currentPendingActions();
+    const failed = all.filter(a => a.state === 'failed').length;
+    const pending = all.length - failed;
+    const disconnected = !navigator.onLine || offlineLoadFailed;
+    if (!disconnected && all.length === 0) { $bar.addClass('hidden'); return; }
+    let message = disconnected ? uiText('אין חיבור לשרת. מוצגת הרשימה האחרונה.', 'Offline: showing your last saved list.') : '';
+    if (pending) message += (message ? ' ' : '') + uiText(`${pending} פעולות ממתינות לסנכרון.`, `${pending} changes waiting to sync.`);
+    if (failed) {
+        message += (message ? ' ' : '') + uiText(`${failed} פעולות דורשות טיפול.`, `${failed} changes need attention.`);
+        const detail = all.find(a => a.state === 'failed')?.error;
+        if (detail) message += ' (' + String(detail).slice(0, 120) + ')';
+    }
+    $('#offlineSyncMessage').text(message);
+    $('#btnOfflineSyncRetry').toggleClass('hidden', !failed && !pending);
+    $('#btnOfflineSyncDiscard').toggleClass('hidden', !failed);
+    $bar.removeClass('hidden');
+}
+function removeOfflineEntry(id) {
+    const store = readOfflineStore();
+    store.queue = store.queue.filter(entry => entry.id !== id);
+    writeOfflineStore(store);
+}
+async function syncOfflineQueue() {
+    if (offlineSyncRunning || !navigator.onLine || !hasAuthenticatedSession || !currentUserId) return;
+    offlineSyncRunning = true;
+    const userId = currentUserId;
+    try {
+        while (navigator.onLine && hasAuthenticatedSession && userId === currentUserId) {
+            const action = readOfflineStore().queue.find(entry => entry.state === 'pending');
+            if (!action) break;
+            let request;
+            if (action.type === 'add') {
+                request = apiCall('POST', '/items', {...action.payload, group_id: action.groupId, client_request_id: action.id});
+            } else if (action.type === 'complete' || action.type === 'uncomplete') {
+                request = apiCall('PATCH', `/items/${action.itemId}/${action.type}`);
+            } else if (action.type === 'move') {
+                request = apiCall('PATCH', `/items/${action.itemId}/list-status`, action.payload);
+            } else {
+                // Never silently drop an unknown queued action.
+                const store = readOfflineStore();
+                const entry = store.queue.find(item => item.id === action.id);
+                if (entry) { entry.state = 'failed'; entry.error = 'Unsupported action'; writeOfflineStore(store); }
+                continue;
+            }
+            try {
+                const response = await request;
+                removeOfflineEntry(action.id);
+                if (action.type === 'complete' && response?.email_notification === 'failed') {
+                    alert(uiText('הפריט סומן כנלקח, אך שליחת ההתראה במייל נכשלה.',
+                        'The item was marked as taken, but the email notification failed.'));
+                }
+                offlineLoadFailed = false;
+            } catch (xhr) {
+                if (isConnectionFailure(xhr) || Number(xhr.status) === 401) {
+                    offlineLoadFailed = true;
+                    break;
+                }
+                const store = readOfflineStore();
+                const entry = store.queue.find(item => item.id === action.id);
+                if (entry) {
+                    entry.state = 'failed';
+                    entry.error = xhr.responseJSON?.error || apiErr(xhr);
+                    writeOfflineStore(store);
+                }
+            }
+            if (Number(currentGroupId) === Number(action.groupId)) {
+                renderVisibleItems();
+                updateOfflineStatus();
+            }
+        }
+    } finally {
+        offlineSyncRunning = false;
+        updateOfflineStatus();
+        if (navigator.onLine && hasAuthenticatedSession && currentGroupId && userId === currentUserId) {
+            loadItems();
+        }
+    }
+}
+$('#btnOfflineSyncRetry').on('click', function () {
+    const store = readOfflineStore();
+    store.queue.filter(a => Number(a.groupId) === Number(currentGroupId)).forEach(a => { a.state = 'pending'; delete a.error; });
+    if (writeOfflineStore(store)) { updateOfflineStatus(); syncOfflineQueue(); }
+});
+$('#btnOfflineSyncDiscard').on('click', function () {
+    const store = readOfflineStore();
+    const failures = store.queue.filter(a => Number(a.groupId) === Number(currentGroupId) && a.state === 'failed');
+    if (!failures.length) return;
+    if (!confirm(uiText('לבטל פעולות שנכשלו בסנכרון? לא ניתן לשחזר אותן.',
+        'Discard unsynced changes that failed? This cannot be undone.'))) return;
+    store.queue = store.queue.filter(a => !failures.some(f => f.id === a.id));
+    if (writeOfflineStore(store)) { renderVisibleItems(); updateOfflineStatus(); }
+});
+window.addEventListener('online', () => {
+    offlineLoadFailed = false;
+    if (!hasAuthenticatedSession) return;
+    loadCurrentProfile().done(() => {
+        syncOfflineQueue();
+        if (currentGroupId) loadItems();
+    });
+});
+window.addEventListener('offline', () => { offlineLoadFailed = true; updateOfflineStatus(); });
+window.addEventListener('storage', event => {
+    if (event.key !== offlineStoreKey() || !currentGroupId) return;
+    if (readOfflineStore().groups[String(currentGroupId)]?.items) {
+        cachedGroupItems = readOfflineStore().groups[String(currentGroupId)].items;
+    }
+    renderVisibleItems();
+    updateOfflineStatus();
+});
+
 const nativeAlert = window.alert.bind(window);
 function setStyledAlertIcon(type = 'warning') {
     const isSuccess = type === 'success';
@@ -417,6 +673,10 @@ function hideStyledAlert() {
 
 $(document).on('keydown', event => {
     if (event.key === 'Escape') {
+        if (!$('#itemNoteReminderModal').hasClass('hidden')) {
+            closeNoteReminder();
+            return;
+        }
         if (!$('#commentComposerModal').hasClass('hidden')) {
             hideCommentComposer();
             return;
@@ -683,6 +943,7 @@ function confirmProfilePasswordChange() {
         .done(() => {
             const loginEmail = currentUserEmail;
             $.ajax({url: API + '/auth/logout', method: 'POST'});
+            clearOfflineUserStorage();
             clearToken();
             stopPoll();
             currentGroupId = null;
@@ -714,6 +975,7 @@ $('#btnDeleteMyAccount').on('click', () => {
     if (!confirm(warning)) return;
     apiCall('DELETE', '/profile/me')
         .done(() => {
+            clearOfflineUserStorage();
             clearToken();
             stopPoll();
             hideProfileModal();
@@ -1117,6 +1379,7 @@ function clearToken() {
     currentAdminPath = '';
     shareLinkCache.clear();
     shareLinkRequests.clear();
+    sessionStorage.removeItem(OFFLINE_ID_KEY);
 }
 
 function handleUnauthorized() {
@@ -1494,6 +1757,11 @@ $('#btnResetPassword').on('click', () => {
 
 $('#btnLogout').on('click', () => {
     closeMobileGroupMenu();
+    if (readOfflineStore().queue.length && !confirm(uiText(
+        'יש פעולות שלא הסתנכרנו. יציאה תמחק אותן מהמכשיר. לצאת בכל זאת?',
+        'Some changes have not synced. Signing out will delete them from this device. Continue?'
+    ))) return;
+    clearOfflineUserStorage();
     $.ajax({url: API + '/auth/logout', method: 'POST'});
     clearToken();
     stopPoll();
@@ -1909,10 +2177,15 @@ function showItems(groupId, groupName, canRename = false, canDelete = false) {
     notificationsPanelOpen = false;
     $('#notifPanel, #shareBanner').addClass('hidden');
     updateMemberCount(0);
+    loadCachedGroup(currentGroupId);
     loadItems();
-    loadNotifications();
-    loadMembers();
-    prefetchShareLink(currentGroupId);
+    if (navigator.onLine) {
+        loadNotifications();
+        loadMembers();
+        prefetchShareLink(currentGroupId);
+    }
+    updateOfflineStatus();
+    syncOfflineQueue();
     requestAnimationFrame(syncFixedUiOffsets);
     startPoll();
 }
@@ -1997,15 +2270,27 @@ function loadItems() {
             if (requestedGroupId !== currentGroupId || requestId !== itemsLoadRequestId) return;
             const items = Array.isArray(response) ? response : response.items;
             if (!Array.isArray(response) && response.server_now) syncServerClock(response.server_now);
-            if (!Array.isArray(response) && Array.isArray(response.suggestions)) renderSuggestions(response.suggestions);
+            const suggestions = !Array.isArray(response) && Array.isArray(response.suggestions) ? response.suggestions : [];
+            if (suggestions.length) renderSuggestions(suggestions);
+            offlineLoadFailed = false;
+            cacheGroupItems(requestedGroupId, items || [], suggestions);
             renderItems(items || []);
+            updateOfflineStatus();
         })
         .fail(xhr => {
             if (requestedGroupId !== currentGroupId || requestId !== itemsLoadRequestId) return;
-            cachedGroupItems = [];
-            $('#itemList').empty();
-            $('#emptyState').removeClass('hidden').text(uiText('לא ניתן לטעון את הרשימה כרגע', 'The list cannot be loaded right now'));
-            alert(apiErr(xhr));
+            if (isConnectionFailure(xhr)) {
+                offlineLoadFailed = true;
+                if (!cachedGroupItems.length) loadCachedGroup(requestedGroupId);
+                updateOfflineStatus();
+                if (!cachedGroupItems.length && !currentPendingActions(requestedGroupId).length) {
+                    $('#emptyState').removeClass('hidden').find('span').text(uiText('אין רשימה שמורה למצב לא מקוון', 'No offline list has been saved'));
+                }
+                return;
+            }
+            if (!cachedGroupItems.length) loadCachedGroup(requestedGroupId);
+            updateOfflineStatus();
+            if (!cachedGroupItems.length && !currentPendingActions(requestedGroupId).length) alert(apiErr(xhr));
         });
 }
 
@@ -2030,8 +2315,9 @@ function resetNewItemComposer() {
 // Both tabs display the same shared group dataset; only one is visible at a time.
 function updateItemListTabs() {
     const isNotNeeded = currentItemListTab === 'not_needed';
-    $('#shoppingCount').text(cachedGroupItems.filter(item => !Number(item.is_not_needed)).length);
-    $('#notNeededCount').text(cachedGroupItems.filter(item => !!Number(item.is_not_needed)).length);
+    const effectiveItems = visibleItemsWithPending();
+    $('#shoppingCount').text(effectiveItems.filter(item => !Number(item.is_not_needed)).length);
+    $('#notNeededCount').text(effectiveItems.filter(item => !!Number(item.is_not_needed)).length);
     $('#itemListTabs .item-list-tab').each(function () {
         const selected = $(this).data('item-list') === currentItemListTab;
         $(this).toggleClass('active', selected)
@@ -2067,7 +2353,7 @@ $('#itemListTabs .item-list-tab').on('click', function () {
 function renderVisibleItems() {
     updateItemListTabs();
     const isNotNeeded = currentItemListTab === 'not_needed';
-    const visibleItems = cachedGroupItems.filter(item => !!Number(item.is_not_needed) === isNotNeeded);
+    const visibleItems = visibleItemsWithPending().filter(item => !!Number(item.is_not_needed) === isNotNeeded);
     const $list = $('#itemList').empty();
     $('#emptyState').toggleClass('hidden', !!visibleItems.length);
     $('#emptyState span').text(isNotNeeded ? uiText('אין כרגע מצרכים ברשימת לא צריך', 'There are no items on the not-needed list') : MAIN_LANGUAGE_TEXT[currentLanguage].emptyList);
@@ -2082,14 +2368,8 @@ function renderItems(items) {
 }
 
 function moveItemBetweenLists(itemId, toNotNeeded) {
-    const $row = $(`.item-row[data-item-id="${Number(itemId)}"]`);
-    $row.find('.item-move-btn, .item-check').prop('disabled', true);
-    apiCall('PATCH', `/items/${Number(itemId)}/list-status`, { is_not_needed: !!toNotNeeded })
-        .done(() => loadItems())
-        .fail(xhr => {
-            $row.find('.item-move-btn, .item-check').prop('disabled', false);
-            alert(apiErr(xhr));
-        });
+    if (Number(itemId) < 1) return;
+    queueOfflineAction({ type: 'move', itemId: Number(itemId), payload: { is_not_needed: !!toNotNeeded } });
 }
 
 function buildRow(item) {
@@ -2124,7 +2404,7 @@ function buildRow(item) {
     } else {
         if (isDone) $check.append(tablerIcon('check'));
         if (isDone) $check.on('click', () => uncompleteItem(item.id));
-        else $check.on('click', () => completeItem(item.id));
+        else $check.on('click', function () { requestCompleteItem(item, this); });
     }
 
     const $time = $('<span class="relative-time">')
@@ -2221,6 +2501,15 @@ function buildRow(item) {
 
     const $body = $('<div class="item-body">').append($head);
     if (rawItemName) $body.append($sub);
+    if (commentCount > 0 && latestComment && !isNotNeeded) {
+        const $chip = $('<button type="button" class="item-note-chip">')
+            .attr('aria-label', uiText(`הערה לפריט ${actionName}. פתח הערות`, `Comment for ${actionName}. View comments`))
+            .append(tablerIcon('message-circle'),
+                $('<span>').text(uiText(`הערה: ${latestComment.body}`, `Note: ${latestComment.body}`)));
+        $chip.on('click', function () { openCommentsModal(item.id, actionName, this); });
+        $body.append($chip);
+    }
+    if (item._pending) $body.append($('<span class="item-pending-label">').text(item._pending));
     const $moveButton = $('<button type="button" class="item-move-btn">')
         .append(tablerIcon('refresh'), $('<span>').text(isNotNeeded ? uiText('העבר לקניות', 'Move to shopping') : uiText('לא צריך', 'Not needed')))
         .attr('aria-label', isNotNeeded ? uiText('העבר את הפריט לקניות', 'Move item to shopping') : uiText('העבר את הפריט ללא צריך', 'Move item to not needed'))
@@ -2233,7 +2522,17 @@ function buildRow(item) {
         .toggleClass('image-only', isImageOnly)
         .toggleClass('staple-item', isStaple)
         .toggleClass('not-needed-item', isNotNeeded)
+        .toggleClass('pending-sync', !!item._pending)
         .append($check, $itemActions, $body, $qtyControl, $moveButton);
+    if (item._temporary || !navigator.onLine) {
+        // Quantity, comment editing and image upload are online-only.
+        $qtyControl.find('button').prop('disabled', true);
+        $actionsButton.prop('disabled', true);
+        if (item._temporary) {
+            $check.prop('disabled', true);
+            $moveButton.prop('disabled', true);
+        }
+    }
     return $row;
 }
 
@@ -2277,6 +2576,11 @@ $('#addItemForm').on('submit', event => {
     }
 
     if (imageFile) {
+        if (!navigator.onLine) {
+            alert(uiText('הוספת מוצר עם תמונה דורשת חיבור לאינטרנט. התמונה לא נשמרה.',
+                'Adding an image requires an internet connection. The image has not been saved.'));
+            return;
+        }
         const formData = new FormData();
         formData.append('group_id', String(currentGroupId));
         formData.append('name', name);
@@ -2296,30 +2600,77 @@ $('#addItemForm').on('submit', event => {
         return;
     }
 
-    apiCall('POST', '/items', { group_id: currentGroupId, name, quantity, is_staple: isStaple, is_not_needed: isNotNeeded })
-        .done(() => {
-            resetNewItemComposer();
-            loadItems();
-        })
-        .fail(xhr => {
-            if (!handleExistingItemConflict(xhr, name, quantity, isNotNeeded)) alert(apiErr(xhr));
-        });
+    if (!currentUserId) {
+        alert(uiText('כדי לשמור פעולות ללא אינטרנט, יש להתחבר תחילה.', 'Sign in before saving offline changes.'));
+        return;
+    }
+    const duplicate = visibleItemsWithPending().find(item => String(item.name || '').trim() === name);
+    if (duplicate) {
+        if (navigator.onLine && !duplicate._temporary && !duplicate._pending) {
+            handleExistingItemConflict({
+                status: 409,
+                responseJSON: {
+                    existing_item: duplicate,
+                    can_add_to_existing: !Number(duplicate.is_completed) && Number(duplicate.total_remaining) > 0
+                }
+            }, name, quantity, isNotNeeded);
+        } else {
+            alert(uiText(`"${name}" כבר נמצא ברשימה. כדי לשנות את הכמות, התחברו לאינטרנט.`,
+                `"${name}" already exists. Connect to the internet to change its quantity.`));
+        }
+        return;
+    }
+    if (queueOfflineAction({
+        type: 'add', localId: -(Date.now() * 1000 + Math.floor(Math.random() * 1000)),
+        payload: { name, quantity, is_staple: isStaple, is_not_needed: isNotNeeded }
+    })) resetNewItemComposer();
 });
 
+function requestCompleteItem(item, trigger) {
+    if (Number(item.id) < 1) return;
+    if (Number(item.comment_count) > 0 && item.latest_comment_body) {
+        noteReminderContext = { itemId: Number(item.id), itemName: item.name || '', trigger };
+        $('#itemNoteReminderTitle').text(uiText('שמתם לב להערות?', 'Did you notice the comments?'));
+        $('#itemNoteReminderItem').text(item.name || uiText('פריט עם תמונה', 'Image item'));
+        const author = item.latest_comment_user ? `${item.latest_comment_user}: ` : '';
+        $('#itemNoteReminderText').text(`${author}${item.latest_comment_body}`);
+        const more = Math.max(0, Number(item.comment_count) - 1);
+        $('#itemNoteReminderMore').text(uiText(`יש עוד ${more} הערות לפריט.`, `There are ${more} more comments on this item.`))
+            .toggleClass('hidden', more < 1);
+        $('#btnItemNoteConfirm').text(uiText('שמתי לב', 'I read it'));
+        $('#btnItemNoteCancel').text(uiText('לא שמתי לב', 'Not yet'));
+        $('#itemNoteReminderModal').removeClass('hidden');
+        $('#btnItemNoteCancel').trigger('focus');
+    } else {
+        completeItem(item.id);
+    }
+}
+function closeNoteReminder() {
+    $('#itemNoteReminderModal').addClass('hidden');
+    const previous = noteReminderContext;
+    noteReminderContext = null;
+    if (previous?.trigger && document.contains(previous.trigger)) previous.trigger.focus();
+    return previous;
+}
+$('#btnItemNoteConfirm').on('click', () => {
+    const context = closeNoteReminder();
+    if (context) completeItem(context.itemId);
+});
+$('#btnItemNoteCancel').on('click', () => {
+    const context = closeNoteReminder();
+    if (!context) return;
+    if (navigator.onLine) openCommentsModal(context.itemId, context.itemName, context.trigger);
+    else alert(uiText('כדי לראות את כל ההערות, יש להתחבר לאינטרנט. הפריט לא סומן.',
+        'Connect to the internet to view all comments. The item was not marked.'));
+});
+$('#itemNoteReminderModal').on('click', event => {
+    if (event.target && event.target.id === 'itemNoteReminderModal') closeNoteReminder();
+});
 function completeItem(id) {
-    apiCall('PATCH', `/items/${id}/complete`)
-        .done(response => {
-            loadItems();
-            loadActivity();
-            loadNotifications();
-            if (response && response.email_notification === 'failed') {
-                alert(uiText('הפריט סומן כנלקח, אך לא ניתן היה לשלוח התראה במייל.', 'The item was marked as taken, but the email notification could not be sent.'));
-            }
-        })
-        .fail(xhr => alert(apiErr(xhr)));
+    queueOfflineAction({ type: 'complete', itemId: Number(id) });
 }
 function uncompleteItem(id) {
-    apiCall('PATCH', `/items/${id}/uncomplete`).done(loadItems).fail(xhr => alert(apiErr(xhr)));
+    queueOfflineAction({ type: 'uncomplete', itemId: Number(id) });
 }
 function deleteItem(id, name) {
     if (!confirm(`למחוק את "${name}"?`)) return;
@@ -3407,8 +3758,11 @@ $('#btnClearActivity').on('click', () => {
 function startPoll() {
     stopPoll();
     pollTimer = setInterval(() => {
-        loadItems();
-        loadNotifications();
+        if (navigator.onLine) {
+            loadItems();
+            loadNotifications();
+            syncOfflineQueue();
+        }
         refreshRelativeTimes();
     }, POLL_MS);
 }
@@ -3676,12 +4030,27 @@ $(function () {
     applyMainLanguage();
     loadCurrentProfile()
         .done(() => {
+            // Resume unsent actions even when the app starts on the group list.
+            syncOfflineQueue();
             if (!redeemPendingInvite()) {
                 sessionStorage.removeItem('last_group');
                 loadGroups();
             }
         })
-        .fail(() => showScreen('screenAuth'));
+        .fail(xhr => {
+            const savedId = Number(sessionStorage.getItem(OFFLINE_ID_KEY));
+            const lastGroup = JSON.parse(sessionStorage.getItem('last_group') || 'null');
+            if (isConnectionFailure(xhr) && savedId > 0 && lastGroup && Number(lastGroup.id) > 0) {
+                currentUserId = savedId;
+                hasAuthenticatedSession = true;
+                const cache = readOfflineStore().groups[String(lastGroup.id)];
+                if (cache && Array.isArray(cache.items)) {
+                    showItems(lastGroup.id, lastGroup.name, lastGroup.can_rename, lastGroup.can_delete);
+                    return;
+                }
+            }
+            showScreen('screenAuth');
+        });
 });
 
 function redeemPendingInvite() {
