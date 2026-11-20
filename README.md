@@ -41,10 +41,6 @@ SharedCart is a mobile-friendly PHP web application for keeping a group shopping
 │   ├── index.html       Main shared-list experience
 │   ├── admin.html       Administrator interface
 │   └── sw.js            Service worker
-├── docs/                Repository documentation assets
-├── qa/                  Playwright test helpers and guidance
-├── schema.sql           Initial database schema
-└── migration-share.sql  Migration for the sharing-related schema
 ```
 
 ## Local setup
