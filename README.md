@@ -64,20 +64,7 @@ SharedCart is a mobile-friendly PHP web application for keeping a group shopping
 
 Configuration, credentials, uploads, and generated reports are intentionally excluded from Git. Do not commit them.
 
-## Quality checks
 
-Install dependencies, copy `qa/.env.example` to `qa/.env`, provide disposable non-administrator test-account values, then run:
-
-```bash
-npm ci
-npm run qa:smoke
-npm run qa:e2e
-npm run qa:security
-# or run every suite
-npm run qa:full
-```
-
-See [`qa/README.md`](qa/README.md) for the test-data policy and the known invitation-method security test.
 
 ## Deployment notes
 
