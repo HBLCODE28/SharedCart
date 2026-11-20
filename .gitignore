@@ -20,6 +20,35 @@ test-results/
 !.env.template
 !.env.dist
 .htpasswd
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+/secret/
+/htdocs/secret/
+**/database.local.php
+**/db.local.php
+**/config.local.php
+
+# Local network-access configuration
+*.ip
+**/allowed-ips.*
+**/ip-allowlist.*
+**/ip-whitelist.*
+**/trusted-proxies.*
+
+# Local backups and non-production administrator artifacts
+backup/
+backups/
+*.backup
+*.old
+*.orig
+/htdocs/admin-backup*.php
+/htdocs/admin-copy*.php
+/htdocs/admin-????????????????????????????????.php
+/docs/admin-screenshots/
+/screenshots/admin/
 
 # Visual Studio / VS Code
 .vs/
